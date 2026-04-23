@@ -5,7 +5,8 @@ import 'package:geolocator/geolocator.dart';
 import 'package:go_router/go_router.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
-import 'route_selection_screen.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 class ReportScreen extends StatefulWidget {
   const ReportScreen({super.key});
@@ -15,9 +16,9 @@ class ReportScreen extends StatefulWidget {
 }
 
 class _ReportScreenState extends State<ReportScreen> {
-  final TextEditingController _titleController = TextEditingController(); // Título/Tipo
-  final TextEditingController _detailsController = TextEditingController(); // POR QUÉ se reporta
-  final TextEditingController _addressController = TextEditingController(); // Dirección automática
+  final TextEditingController _titleController = TextEditingController();
+  final TextEditingController _detailsController = TextEditingController();
+  final TextEditingController _addressController = TextEditingController();
 
   final MapController _mapController = MapController();
   LatLng? _selectedLocation;
@@ -49,14 +50,20 @@ class _ReportScreenState extends State<ReportScreen> {
   }
 
   Future<void> _setInitialLocation() async {
-    Position position = await Geolocator.getCurrentPosition();
-    LatLng initialPoint = LatLng(position.latitude, position.longitude);
-    setState(() {
-      _selectedLocation = initialPoint;
-    });
-    _getAddressFromCoords(initialPoint);
+    try {
+      Position position = await Geolocator.getCurrentPosition();
+      LatLng initialPoint = LatLng(position.latitude, position.longitude);
+      setState(() {
+        _selectedLocation = initialPoint;
+      });
+      _getAddressFromCoords(initialPoint);
+    } catch (e) {
+      // Ubicación por defecto si falla el GPS (ej. CDMX)
+      _selectedLocation = const LatLng(19.4326, -99.1332);
+    }
   }
 
+  // --- FUNCIÓN MODIFICADA PARA CROWDSOURCING CON FIREBASE ---
   Future<void> _enviarReporte() async {
     if (_titleController.text.isEmpty || _detailsController.text.isEmpty || _selectedLocation == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -67,27 +74,49 @@ class _ReportScreenState extends State<ReportScreen> {
 
     setState(() => _isSending = true);
 
-    // Concatenamos título y detalles para el marcador
-    String fullDescription = "${_titleController.text}: ${_detailsController.text}";
+    try {
+      // 1. Obtener el usuario actual
+      final user = FirebaseAuth.instance.currentUser;
 
-    globalReports.add(IncidentReport(
-      position: _selectedLocation!,
-      type: fullDescription,
-      icon: Icons.report_problem,
-      color: Colors.redAccent,
-    ));
+      // 2. Enviar a Cloud Firestore
+      await FirebaseFirestore.instance.collection('reports').add({
+        'title': _titleController.text.trim(),
+        'description': _detailsController.text.trim(),
+        'address': _addressController.text,
+        'latitude': _selectedLocation!.latitude,
+        'longitude': _selectedLocation!.longitude,
+        'timestamp': FieldValue.serverTimestamp(), // Hora del servidor
+        'userId': user?.uid,
+        'userEmail': user?.email,
+        'status': 'active', // Para poder moderar reportes después
+        'votes': 0, // Para validación de la comunidad
+      });
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("Reporte comunitario publicado con éxito")),
-    );
-    context.pop();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("¡Reporte comunitario publicado con éxito!"),
+            backgroundColor: Colors.green,
+          ),
+        );
+        context.pop(); // Regresar al mapa
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Error al subir el reporte: $e")),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isSending = false);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text("Detalles del Reporte")),
-      body: SingleChildScrollView( // Para que el teclado no tape los campos
+      body: SingleChildScrollView(
         child: Column(
           children: [
             // --- MINIMAPA ---
@@ -114,6 +143,8 @@ class _ReportScreenState extends State<ReportScreen> {
                     markers: [
                       Marker(
                         point: _selectedLocation!,
+                        width: 40,
+                        height: 40,
                         child: const Icon(Icons.location_on, color: Colors.red, size: 40),
                       ),
                     ],
@@ -127,10 +158,9 @@ class _ReportScreenState extends State<ReportScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // CUADRO DE UBICACIÓN (AUTOPREDICHO)
                   TextField(
                     controller: _addressController,
-                    readOnly: true, // No se edita a mano, se llena con el mapa
+                    readOnly: true,
                     decoration: InputDecoration(
                       labelText: "Ubicación seleccionada",
                       prefixIcon: const Icon(Icons.map_outlined),
@@ -142,7 +172,6 @@ class _ReportScreenState extends State<ReportScreen> {
                   ),
                   const SizedBox(height: 15),
 
-                  // CUADRO DE TÍTULO
                   TextField(
                     controller: _titleController,
                     decoration: InputDecoration(
@@ -153,10 +182,9 @@ class _ReportScreenState extends State<ReportScreen> {
                   ),
                   const SizedBox(height: 15),
 
-                  // CUADRO DE DETALLES ADICIONALES
                   TextField(
                     controller: _detailsController,
-                    maxLines: 3, // Más espacio para explicar
+                    maxLines: 3,
                     decoration: InputDecoration(
                       labelText: "Descripción detallada",
                       hintText: "Explica qué sucedió o por qué es peligroso este lugar...",
@@ -174,7 +202,11 @@ class _ReportScreenState extends State<ReportScreen> {
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                     ),
                     icon: _isSending
-                        ? const CircularProgressIndicator(color: Colors.white)
+                        ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2)
+                    )
                         : const Icon(Icons.cloud_upload),
                     label: const Text("PUBLICAR REPORTE", style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                   ),
