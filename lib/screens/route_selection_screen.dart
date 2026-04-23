@@ -26,7 +26,8 @@ class RouteOption {
   final String duration;
   final String type;
   final Color color;
-  RouteOption({required this.points, required this.duration, required this.type, required this.color});
+  final int riskLevel; // Nueva propiedad para medir el riesgo
+  RouteOption({required this.points, required this.duration, required this.type, required this.color, required this.riskLevel});
 }
 
 // --- PANTALLA PRINCIPAL ---
@@ -56,6 +57,24 @@ class _RouteSelectionScreenState extends State<RouteSelectionScreen> {
     _initPreciseLocation();
   }
 
+  // --- ALGORITMO DE ESCANEO DE RIESGOS ---
+  int _calculateRouteRisk(List<LatLng> points) {
+    int riskPoints = 0;
+    // Umbral de cercanía (aprox. 100 metros)
+    const double threshold = 0.001;
+
+    for (var point in points) {
+      for (var report in globalReports) {
+        double distance = (point.latitude - report.position.latitude).abs() +
+            (point.longitude - report.position.longitude).abs();
+        if (distance < threshold) {
+          riskPoints++;
+        }
+      }
+    }
+    return riskPoints;
+  }
+
   Future<void> _initPreciseLocation() async {
     try {
       Position position = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.best);
@@ -82,6 +101,7 @@ class _RouteSelectionScreenState extends State<RouteSelectionScreen> {
 
       if (geoData.isNotEmpty) {
         _destinationLocation = LatLng(double.parse(geoData[0]['lat']), double.parse(geoData[0]['lon']));
+
         final routeUrl = 'https://router.project-osrm.org/route/v1/foot/'
             '${_currentLocation!.longitude},${_currentLocation!.latitude};'
             '${_destinationLocation!.longitude},${_destinationLocation!.latitude}'
@@ -92,18 +112,27 @@ class _RouteSelectionScreenState extends State<RouteSelectionScreen> {
 
         if (routeData['routes'] != null) {
           List<RouteOption> tempRoutes = [];
-          for (int i = 0; i < routeData['routes'].length; i++) {
-            var route = routeData['routes'][i];
+
+          for (var route in routeData['routes']) {
             List coords = route['geometry']['coordinates'];
+            List<LatLng> points = coords.map((c) => LatLng(c[1], c[0])).toList();
             int minutes = (route['duration'].toDouble() / 60).round();
 
+            // Analizamos la seguridad de esta opción específica
+            int riskCount = _calculateRouteRisk(points);
+
             tempRoutes.add(RouteOption(
-              points: coords.map((c) => LatLng(c[1], c[0])).toList(),
+              points: points,
               duration: "$minutes min",
-              type: i == 0 ? "Ruta Rápida" : "Ruta Más Segura",
-              color: i == 0 ? Colors.orange : Colors.green,
+              riskLevel: riskCount,
+              type: riskCount == 0 ? "Ruta Segura" : "Ruta con $riskCount riesgos",
+              color: riskCount == 0 ? Colors.green : (riskCount < 2 ? Colors.orange : Colors.red),
             ));
           }
+
+          // Ordenamos: Las rutas con menos riesgos aparecen primero
+          tempRoutes.sort((a, b) => a.riskLevel.compareTo(b.riskLevel));
+
           setState(() { _allRoutes = tempRoutes; });
           _mapController.move(_destinationLocation!, 14);
         }
@@ -180,13 +209,14 @@ class _RouteSelectionScreenState extends State<RouteSelectionScreen> {
                 urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                 userAgentPackageName: 'com.safe_route_app.app',
               ),
+              // DIBUJAR TODAS LAS RUTAS
               if (_allRoutes.isNotEmpty)
                 PolylineLayer(
                   polylines: _allRoutes.map((route) => Polyline(
                     points: route.points,
                     color: _isNavigating
                         ? (_selectedRoute == route ? route.color : Colors.transparent)
-                        : (route.color.withOpacity(0.6)),
+                        : (route.color.withOpacity(0.6)), // Opacidad para ver todas
                     strokeWidth: _selectedRoute == route ? 8 : 5,
                   )).toList(),
                 ),
@@ -205,12 +235,10 @@ class _RouteSelectionScreenState extends State<RouteSelectionScreen> {
             ],
           ),
 
-          // BARRA DE BÚSQUEDA MEJORADA
+          // BARRA DE BÚSQUEDA
           if (!_isNavigating)
             Positioned(
-              top: 20,
-              left: 15,
-              right: 15,
+              top: 20, left: 15, right: 15,
               child: Container(
                 height: 55,
                 decoration: BoxDecoration(
@@ -251,11 +279,9 @@ class _RouteSelectionScreenState extends State<RouteSelectionScreen> {
               ),
             ),
 
-          // BOTÓN GUARDIANES
           if (!_isNavigating)
             Positioned(
-              top: 85,
-              left: 20,
+              top: 85, left: 20,
               child: FloatingActionButton.small(
                 heroTag: "btn_guardians",
                 backgroundColor: Colors.white,
@@ -264,12 +290,10 @@ class _RouteSelectionScreenState extends State<RouteSelectionScreen> {
               ),
             ),
 
-          // PANEL INFERIOR CON TARJETAS MODERNAS
+          // PANEL INFERIOR CON COMPARATIVA DE RIESGO
           if (_allRoutes.isNotEmpty && !_isNavigating)
             Positioned(
-              bottom: 0,
-              left: 0,
-              right: 0,
+              bottom: 0, left: 0, right: 0,
               child: Container(
                 padding: const EdgeInsets.fromLTRB(20, 12, 20, 30),
                 decoration: BoxDecoration(
@@ -284,7 +308,7 @@ class _RouteSelectionScreenState extends State<RouteSelectionScreen> {
                   children: [
                     Container(width: 45, height: 5, decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(10))),
                     const SizedBox(height: 15),
-                    const Text("Rutas sugeridas", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                    const Text("Analizador de Seguridad", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
                     const SizedBox(height: 15),
                     ..._allRoutes.map((route) => Padding(
                       padding: const EdgeInsets.only(bottom: 12),
@@ -307,7 +331,7 @@ class _RouteSelectionScreenState extends State<RouteSelectionScreen> {
                               CircleAvatar(
                                 backgroundColor: route.color,
                                 radius: 22,
-                                child: Icon(route.type.contains("Segura") ? Icons.shield : Icons.bolt, color: Colors.white, size: 24),
+                                child: Icon(route.riskLevel == 0 ? Icons.shield : Icons.warning_amber_rounded, color: Colors.white, size: 24),
                               ),
                               const SizedBox(width: 15),
                               Expanded(
@@ -315,8 +339,12 @@ class _RouteSelectionScreenState extends State<RouteSelectionScreen> {
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Text(route.type, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                                    Text(route.type.contains("Segura") ? "Vías principales e iluminadas" : "El camino más corto",
-                                        style: TextStyle(color: Colors.grey[700], fontSize: 13)),
+                                    Text(
+                                      route.riskLevel == 0
+                                          ? "Sin peligros reportados cerca"
+                                          : "Evita zonas con reportes activos",
+                                      style: TextStyle(color: Colors.grey[700], fontSize: 13),
+                                    ),
                                   ],
                                 ),
                               ),
@@ -338,11 +366,9 @@ class _RouteSelectionScreenState extends State<RouteSelectionScreen> {
               ),
             ),
 
-          // NAVEGACIÓN ACTIVA (SOS Y FINALIZAR)
           if (_isNavigating) ...[
             Positioned(
-              bottom: 30,
-              right: 20,
+              bottom: 30, right: 20,
               child: FloatingActionButton.large(
                 heroTag: "sos_panic",
                 backgroundColor: Colors.red,
@@ -351,8 +377,7 @@ class _RouteSelectionScreenState extends State<RouteSelectionScreen> {
               ),
             ),
             Positioned(
-              bottom: 30,
-              left: 20,
+              bottom: 30, left: 20,
               child: FloatingActionButton.extended(
                 heroTag: "stop_nav",
                 backgroundColor: Colors.black87,
