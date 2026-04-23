@@ -9,31 +9,39 @@ import 'package:safe_route_app/screens/profile_screen.dart';
 import 'package:safe_route_app/screens/report_screen.dart';
 import 'package:safe_route_app/screens/guardians_screen.dart';
 import 'package:safe_route_app/screens/route_selection_screen.dart';
-// Asegúrate de crear estos archivos para el login y registro
 import 'package:safe_route_app/screens/login_screen.dart';
 import 'package:safe_route_app/screens/register_screen.dart';
+import 'dart:async';
 
 void main() async {
-  // 1. Necesario para inicializar Firebase antes de runApp
   WidgetsFlutterBinding.ensureInitialized();
-
-  // 2. Inicialización de Firebase
   await Firebase.initializeApp();
-
   runApp(const SafeRouteApp());
 }
 
-// Configuración de las rutas
+// CONFIGURACIÓN DE RUTAS REACTIVA
 final GoRouter _router = GoRouter(
-  // 3. Lógica de inicio: si no hay usuario, va a login. Si hay, va a home.
-  initialLocation: FirebaseAuth.instance.currentUser == null ? '/login' : '/',
+  initialLocation: '/',
+  // ESCUCHA LOS CAMBIOS DE AUTH (Login/Logout)
+  refreshListenable: GoRouterRefreshStream(FirebaseAuth.instance.authStateChanges()),
+
+  redirect: (context, state) {
+    final bool loggedIn = FirebaseAuth.instance.currentUser != null;
+    final bool isLoggingIn = state.matchedLocation == '/login' || state.matchedLocation == '/register';
+
+    // 1. Si no está logueado y no está en login/register, mándalo a /login
+    if (!loggedIn && !isLoggingIn) return '/login';
+
+    // 2. Si ya está logueado e intenta ir a login/register, mándalo al Home
+    if (loggedIn && isLoggingIn) return '/';
+
+    // De lo contrario, no redirigir a ningún lado
+    return null;
+  },
 
   routes: [
-    // Rutas de Autenticación
     GoRoute(path: '/login', builder: (context, state) => const LoginScreen()),
     GoRoute(path: '/register', builder: (context, state) => const RegisterScreen()),
-
-    // Rutas Principales
     GoRoute(path: '/', builder: (context, state) => const HomeScreen()),
     GoRoute(path: '/routes', builder: (context, state) => const RouteSelectionScreen()),
     GoRoute(path: '/report', builder: (context, state) => const ReportScreen()),
@@ -41,6 +49,22 @@ final GoRouter _router = GoRouter(
     GoRoute(path: '/profile', builder: (context, state) => const ProfileScreen()),
   ],
 );
+
+// CLASE AUXILIAR PARA QUE GOROUTER ESCUCHE A FIREBASE
+// Cópiala tal cual debajo de tu _router
+
+class GoRouterRefreshStream extends ChangeNotifier {
+  GoRouterRefreshStream(Stream<dynamic> stream) {
+    notifyListeners();
+    _subscription = stream.asBroadcastStream().listen((dynamic _) => notifyListeners());
+  }
+  late final StreamSubscription<dynamic> _subscription;
+  @override
+  void dispose() {
+    _subscription.cancel();
+    super.dispose();
+  }
+}
 
 class SafeRouteApp extends StatelessWidget {
   const SafeRouteApp({super.key});
@@ -53,7 +77,6 @@ class SafeRouteApp extends StatelessWidget {
       theme: ThemeData(
         useMaterial3: true,
         colorSchemeSeed: Colors.blueAccent,
-        // Estilo global para botones para que se vea profesional
         elevatedButtonTheme: ElevatedButtonThemeData(
           style: ElevatedButton.styleFrom(
             backgroundColor: Colors.blueAccent,
